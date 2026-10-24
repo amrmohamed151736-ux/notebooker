@@ -28,10 +28,11 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.PictureAsPdf
-import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.local.NoteForgeDatabase
+import com.example.data.repository.FocusRepository
 import com.example.data.repository.NotebookRepository
 import com.example.data.repository.TaskRepository
 import com.example.model.Notebook
@@ -68,6 +70,7 @@ import com.example.ui.screens.AiAssistantScreen
 import com.example.ui.screens.CoverDesignerScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.EditorScreen
+import com.example.ui.screens.FocusStoreScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.PdfStudioScreen
 import com.example.ui.screens.SettingsScreen
@@ -86,11 +89,17 @@ class MainActivity : ComponentActivity() {
         val database = NoteForgeDatabase.getDatabase(applicationContext)
         val repository = NotebookRepository(database.notebookDao())
         val taskRepository = TaskRepository(database.taskDao())
+        val focusRepository = FocusRepository(
+            database.focusSessionDao(),
+            database.pointsTransactionDao(),
+            database.storePurchaseDao(),
+            database.customThemeDao()
+        )
 
         setContent {
             NoteForgeTheme {
                 val viewModel: NoteForgeViewModel = viewModel(
-                    factory = NoteForgeViewModel.Factory(repository, taskRepository)
+                    factory = NoteForgeViewModel.Factory(repository, taskRepository, focusRepository)
                 )
                 NoteForgeApp(viewModel)
             }
@@ -138,6 +147,7 @@ fun NoteForgeApp(viewModel: NoteForgeViewModel) {
                                 AppTab.PDF_STUDIO -> "استوديو PDF الاحترافي"
                                 AppTab.STUDY -> "استوديو المذاكرة والتحليل"
                                 AppTab.TASKS_PRINT -> "المهام ومدقق الطباعة"
+                                AppTab.FOCUS_STORE -> "نظام التركيز ومتجر المكافآت"
                                 AppTab.SETTINGS -> "الإعدادات وتشخيص النظام"
                                 AppTab.TEMPLATE_STUDIO -> "محرر القوالب الورقية"
                                 AppTab.COVER_DESIGNER -> "مصمم الأغلفة الفنية"
@@ -182,8 +192,9 @@ fun NoteForgeApp(viewModel: NoteForgeViewModel) {
                     val navItems = listOf(
                         AppTab.DASHBOARD to (Icons.Filled.Home to Icons.Outlined.Home),
                         AppTab.LIBRARY to (Icons.AutoMirrored.Filled.MenuBook to Icons.AutoMirrored.Outlined.MenuBook),
+                        AppTab.FOCUS_STORE to (Icons.Filled.Storefront to Icons.Outlined.Storefront),
                         AppTab.PDF_STUDIO to (Icons.Filled.PictureAsPdf to Icons.Outlined.PictureAsPdf),
-                        AppTab.STUDY to (Icons.Filled.Psychology to Icons.Outlined.Psychology),
+                        AppTab.STUDY to (Icons.Filled.Psychology to Icons.Filled.Psychology),
                         AppTab.TASKS_PRINT to (Icons.AutoMirrored.Filled.FactCheck to Icons.AutoMirrored.Outlined.FactCheck)
                     )
 
@@ -242,6 +253,9 @@ fun NoteForgeApp(viewModel: NoteForgeViewModel) {
                     AppTab.EDITOR -> EditorScreen(
                         viewModel = viewModel,
                         onOpenExportDialog = { book -> notebookToExport = book }
+                    )
+                    AppTab.FOCUS_STORE -> FocusStoreScreen(
+                        viewModel = viewModel
                     )
                     AppTab.PDF_STUDIO -> PdfStudioScreen(
                         viewModel = viewModel

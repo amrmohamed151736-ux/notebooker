@@ -9,6 +9,7 @@ import com.example.model.PaperSize
 import com.example.model.TemplateCategory
 import com.example.model.TemplateConfig
 import com.example.model.TemplateType
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -229,5 +230,85 @@ class ExampleRobolectricTest {
         assertNotNull(stampAnnotation)
         assertEquals(com.example.pdf.PdfStampType.APPROVED, stampAnnotation.stampType)
         assertEquals("#059669", stampAnnotation.stampType?.colorHex)
+    }
+
+    @Test
+    fun `verify focus economy points calculation and anti-duplicate rules`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.NoteForgeDatabase.getDatabase(context)
+        val focusRepo = com.example.data.repository.FocusRepository(
+            db.focusSessionDao(),
+            db.pointsTransactionDao(),
+            db.storePurchaseDao(),
+            db.customThemeDao()
+        )
+
+        // 1. Starter balance initialization (50 points)
+        focusRepo.initializeStarterDataIfNeeded()
+        var balance = focusRepo.totalBalance.first()
+        assertEquals(50, balance)
+
+        // Ensure starter data is idempotent
+        focusRepo.initializeStarterDataIfNeeded()
+        balance = focusRepo.totalBalance.first()
+        assertEquals(50, balance)
+
+        // 2. Rule 1: 25 minutes completed session yields 35 points (25 + 10 bonus)
+        val session25Id = "test_session_25"
+        val pts25 = focusRepo.recordFocusSession(
+            sessionId = session25Id,
+            targetMinutes = 25,
+            actualFocusSeconds = 25 * 60,
+            isCompleted = true
+        )
+        assertEquals(35, pts25)
+
+        // Prevent duplicate crediting for same session ID
+        val duplicatePts = focusRepo.recordFocusSession(
+            sessionId = session25Id,
+            targetMinutes = 25,
+            actualFocusSeconds = 25 * 60,
+            isCompleted = true
+        )
+        assertEquals(35, duplicatePts)
+
+        // 3. Rule 2: 50 minutes completed session yields 60 points (50 + 10 bonus)
+        val session50Id = "test_session_50"
+        val pts50 = focusRepo.recordFocusSession(
+            sessionId = session50Id,
+            targetMinutes = 50,
+            actualFocusSeconds = 50 * 60,
+            isCompleted = true
+        )
+        assertEquals(60, pts50)
+
+        // 4. Rule 3: Cancelled session does not award 10-point bonus
+        val cancelledSessionId = "test_session_cancelled"
+        val ptsCancelled = focusRepo.recordFocusSession(
+            sessionId = cancelledSessionId,
+            targetMinutes = 25,
+            actualFocusSeconds = 12 * 60, // 12 minutes elapsed before cancel
+            isCompleted = false
+        )
+        assertEquals(12, ptsCancelled) // Only 12 points for minutes, NO 10 points bonus
+
+        // 5. Store Purchase validation:
+        val digitalSkin = com.example.model.StoreCatalog.items.first { it.id == "SKIN_DIGITAL" }
+        assertEquals(30, digitalSkin.price)
+        val purchaseResult = focusRepo.purchaseStoreItem(digitalSkin)
+        assertTrue(purchaseResult.isSuccess)
+
+        // Cannot buy same item twice
+        val secondBuy = focusRepo.purchaseStoreItem(digitalSkin)
+        assertTrue(secondBuy.isFailure)
+
+        // Verify catalog items and 7 timer skins exist
+        val timerSkins = com.example.model.StoreCatalog.items.filter { it.category == com.example.model.StoreCategory.TIMER_SKINS }
+        assertEquals(7, timerSkins.size)
+
+        // Verify rare collectibles exist across rarities
+        val collectibles = com.example.model.StoreCatalog.items.filter { it.category == com.example.model.StoreCategory.COLLECTIBLES }
+        assertTrue(collectibles.size >= 6)
+        assertTrue(collectibles.any { it.rarity == com.example.model.ItemRarity.LEGENDARY })
     }
 }

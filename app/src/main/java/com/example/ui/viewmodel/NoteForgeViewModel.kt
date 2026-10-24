@@ -28,6 +28,17 @@ import com.example.pdf.PdfAnnotationType
 import com.example.pdf.PdfEngine
 import com.example.pdf.PdfStampType
 import com.example.pdf.PdfGenerator
+import com.example.data.local.CustomThemeEntity
+import com.example.data.local.FocusSessionEntity
+import com.example.data.local.PointsTransactionEntity
+import com.example.data.local.StorePurchaseEntity
+import com.example.data.repository.FocusRepository
+import com.example.focus.SoundEffectManager
+import com.example.model.AchievementItem
+import com.example.model.StoreCategory
+import com.example.model.StoreItem
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +55,7 @@ enum class AppTab(val labelAr: String, val labelEn: String) {
     PDF_STUDIO("استوديو PDF", "PDF Studio"),
     STUDY("المذاكرة", "Study"),
     TASKS_PRINT("المهام والطباعة", "Tasks & Print"),
+    FOCUS_STORE("التركيز والمتجر", "Focus & Store"),
     SETTINGS("الإعدادات", "Settings"),
     // Legacy aliases for backward compatibility
     HOME("الرئيسية", "Dashboard"),
@@ -55,7 +67,8 @@ enum class AppTab(val labelAr: String, val labelEn: String) {
 
 class NoteForgeViewModel(
     private val repository: NotebookRepository,
-    private val taskRepository: TaskRepository
+    private val taskRepository: TaskRepository,
+    private val focusRepository: FocusRepository
 ) : ViewModel() {
 
     val notebooks: StateFlow<List<Notebook>> = repository.notebooks
@@ -89,6 +102,71 @@ class NoteForgeViewModel(
 
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+
+    // Focus & Store State
+    val focusPointsBalance: StateFlow<Int> = focusRepository.totalBalance
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = 50
+        )
+
+    val storePurchases: StateFlow<List<StorePurchaseEntity>> = focusRepository.allPurchases
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val focusSessions: StateFlow<List<FocusSessionEntity>> = focusRepository.allSessions
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val pointsTransactions: StateFlow<List<PointsTransactionEntity>> = focusRepository.allTransactions
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val customThemes: StateFlow<List<CustomThemeEntity>> = focusRepository.allCustomThemes
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    private val _timerTargetMinutes = MutableStateFlow(25)
+    val timerTargetMinutes: StateFlow<Int> = _timerTargetMinutes.asStateFlow()
+
+    private val _timerRemainingSeconds = MutableStateFlow(25 * 60)
+    val timerRemainingSeconds: StateFlow<Int> = _timerRemainingSeconds.asStateFlow()
+
+    private val _timerActualFocusSeconds = MutableStateFlow(0)
+    val timerActualFocusSeconds: StateFlow<Int> = _timerActualFocusSeconds.asStateFlow()
+
+    private val _timerIsRunning = MutableStateFlow(false)
+    val timerIsRunning: StateFlow<Boolean> = _timerIsRunning.asStateFlow()
+
+    private val _timerIsPaused = MutableStateFlow(false)
+    val timerIsPaused: StateFlow<Boolean> = _timerIsPaused.asStateFlow()
+
+    private val _activeTimerSkin = MutableStateFlow("SKIN_CIRCULAR")
+    val activeTimerSkin: StateFlow<String> = _activeTimerSkin.asStateFlow()
+
+    private val _activeTitle = MutableStateFlow("مبتدئ التركيز")
+    val activeTitle: StateFlow<String> = _activeTitle.asStateFlow()
+
+    private var timerTickerJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            focusRepository.initializeStarterDataIfNeeded()
+        }
+    }
 
     // AI Chat State
     private val _chatMessages = MutableStateFlow<List<ChatMessage>>(
@@ -988,14 +1066,183 @@ class NoteForgeViewModel(
         _statusMessage.value = null
     }
 
+    // --- Focus & Store Functions ---
+
+    fun setTimerDuration(minutes: Int) {
+        if (_timerIsRunning.value) return
+        _timerTargetMinutes.value = minutes
+        _timerRemainingSeconds.value = minutes * 60
+        _timerActualFocusSeconds.value = 0
+    }
+
+    fun startFocusTimer() {
+        if (_timerIsRunning.value) return
+        _timerIsRunning.value = true
+        _timerIsPaused.value = false
+        _timerActualFocusSeconds.value = 0
+        _timerRemainingSeconds.value = _timerTargetMinutes.value * 60
+        SoundEffectManager.playSessionStart()
+
+        timerTickerJob?.cancel()
+        timerTickerJob = viewModelScope.launch {
+            while (_timerIsRunning.value && _timerRemainingSeconds.value > 0) {
+                delay(1000)
+                if (!_timerIsPaused.value) {
+                    _timerActualFocusSeconds.value += 1
+                    _timerRemainingSeconds.value -= 1
+                    if (_timerRemainingSeconds.value <= 0) {
+                        completeFocusSession()
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    fun pauseFocusTimer() {
+        if (_timerIsRunning.value) {
+            _timerIsPaused.value = true
+        }
+    }
+
+    fun resumeFocusTimer() {
+        if (_timerIsRunning.value) {
+            _timerIsPaused.value = false
+        }
+    }
+
+    fun cancelFocusTimer() {
+        if (!_timerIsRunning.value) return
+        timerTickerJob?.cancel()
+        _timerIsRunning.value = false
+        _timerIsPaused.value = false
+
+        val actualSecs = _timerActualFocusSeconds.value
+        val targetMins = _timerTargetMinutes.value
+        viewModelScope.launch {
+            val pts = focusRepository.recordFocusSession(
+                targetMinutes = targetMins,
+                actualFocusSeconds = actualSecs,
+                isCompleted = false
+            )
+            _statusMessage.value = "تم إنهاء الجلسة مبكراً. نقاط التركيز الفعلية: +$pts نقطة"
+        }
+        _timerRemainingSeconds.value = targetMins * 60
+        _timerActualFocusSeconds.value = 0
+    }
+
+    fun completeFocusSession() {
+        timerTickerJob?.cancel()
+        _timerIsRunning.value = false
+        _timerIsPaused.value = false
+
+        val targetMins = _timerTargetMinutes.value
+        // Ensure at least target minutes * 60 focus is recorded for completion
+        val actualSecs = maxOf(_timerActualFocusSeconds.value, targetMins * 60)
+
+        viewModelScope.launch {
+            val totalPts = focusRepository.recordFocusSession(
+                targetMinutes = targetMins,
+                actualFocusSeconds = actualSecs,
+                isCompleted = true
+            )
+            _statusMessage.value = "تهانينا! اكتملت الجلسة بنجاح وحصدت $totalPts نقطة (بما فيها 10 نقاط بونص)! 🎉"
+        }
+
+        _timerRemainingSeconds.value = targetMins * 60
+        _timerActualFocusSeconds.value = 0
+    }
+
+    fun purchaseStoreItem(item: StoreItem) {
+        viewModelScope.launch {
+            val res = focusRepository.purchaseStoreItem(item)
+            if (res.isSuccess) {
+                _statusMessage.value = res.getOrNull()
+                if (item.category == StoreCategory.TIMER_SKINS) {
+                    _activeTimerSkin.value = item.id
+                } else if (item.category == StoreCategory.BADGES_TITLES) {
+                    _activeTitle.value = item.titleAr.replace("لقب: ", "")
+                }
+            } else {
+                _statusMessage.value = res.exceptionOrNull()?.message ?: "فشلت عملية الشراء"
+            }
+        }
+    }
+
+    fun equipStoreItem(item: StoreItem) {
+        viewModelScope.launch {
+            focusRepository.equipItem(item.id, item.category.name)
+            when (item.category) {
+                StoreCategory.TIMER_SKINS -> _activeTimerSkin.value = item.id
+                StoreCategory.BADGES_TITLES -> _activeTitle.value = item.titleAr.replace("لقب: ", "")
+                else -> {}
+            }
+            _statusMessage.value = "تم تفعيل ${item.titleAr} بنجاح!"
+        }
+    }
+
+    fun togglePurchaseFavorite(purchase: StorePurchaseEntity) {
+        viewModelScope.launch {
+            focusRepository.toggleFavorite(purchase)
+        }
+    }
+
+    fun saveCustomTheme(
+        name: String,
+        primaryHex: String,
+        secondaryHex: String,
+        bgHex: String,
+        textHex: String,
+        surfaceHex: String,
+        radiusDp: Int
+    ) {
+        viewModelScope.launch {
+            focusRepository.saveCustomTheme(
+                CustomThemeEntity(
+                    name = name,
+                    primaryColorHex = primaryHex,
+                    secondaryColorHex = secondaryHex,
+                    backgroundColorHex = bgHex,
+                    textColorHex = textHex,
+                    surfaceColorHex = surfaceHex,
+                    cornerRadiusDp = radiusDp
+                )
+            )
+            _statusMessage.value = "تم حفظ ثيم '$name' بنجاح!"
+        }
+    }
+
+    fun deleteCustomTheme(theme: CustomThemeEntity) {
+        viewModelScope.launch {
+            focusRepository.deleteCustomTheme(theme)
+            _statusMessage.value = "تم حذف الثيم."
+        }
+    }
+
+    fun applyTheme(theme: CustomThemeEntity) {
+        _statusMessage.value = "تم تطبيق ثيم '${theme.name}' على التطبيق!"
+        SoundEffectManager.playPointsEarned()
+    }
+
+    fun equipTitle(title: String) {
+        _activeTitle.value = title
+        _statusMessage.value = "تم تفعيل لقب '$title'!"
+        SoundEffectManager.playPointsEarned()
+    }
+
+    fun claimAchievementReward(ach: AchievementItem) {
+        _statusMessage.value = "إنجاز: ${ach.titleAr} (+${ach.rewardPoints} نقطة)"
+    }
+
     class Factory(
         private val repository: NotebookRepository,
-        private val taskRepository: TaskRepository
+        private val taskRepository: TaskRepository,
+        private val focusRepository: FocusRepository
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             if (modelClass.isAssignableFrom(NoteForgeViewModel::class.java)) {
-                return NoteForgeViewModel(repository, taskRepository) as T
+                return NoteForgeViewModel(repository, taskRepository, focusRepository) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")
         }
